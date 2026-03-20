@@ -19,6 +19,7 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 
         var files = Directory
             .EnumerateFiles(inputDirectory, "*.xlsx", SearchOption.TopDirectoryOnly)
+            .Where(file => !ShouldIgnoreFile(file))
             .OrderBy(ParseYearFromPath)
             .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -39,6 +40,11 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
             var year = ParseYear(worksheet, file);
             var lastRow = worksheet.LastRowUsed()?.RowNumber() ?? 0;
             var lastColumn = worksheet.LastColumnUsed()?.ColumnNumber() ?? 0;
+            var headers = Enumerable.Range(1, lastColumn)
+                .Select(column => worksheet.Cell(1, column).GetString())
+                .ToList();
+            var hasSaldo = headers.Any(header => string.Equals(header, "SaldoActual", StringComparison.Ordinal));
+            var monthStartColumn = hasSaldo ? 5 : 4;
 
             if (lastColumn < 17)
             {
@@ -56,7 +62,7 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 
                 var name = worksheet.Cell(row, 2).GetString().Trim();
                 var model = worksheet.Cell(row, 3).GetString().Trim();
-                var stock = ParseNumericCell(worksheet.Cell(row, 4)) ?? 0m;
+                var stock = hasSaldo ? (ParseNumericCell(worksheet.Cell(row, 4)) ?? 0m) : 0m;
 
                 if (!aggregators.TryGetValue(code, out var aggregate))
                 {
@@ -65,17 +71,20 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
                 }
 
                 aggregate.UpdateIdentity(name, model);
-                aggregate.UpdateStock(year, stock, name, model);
+                if (hasSaldo)
+                {
+                    aggregate.UpdateStock(year, stock, name, model);
+                }
 
                 for (var monthIndex = 0; monthIndex < 12; monthIndex++)
                 {
-                    var value = ParseNumericCell(worksheet.Cell(row, 5 + monthIndex));
+                    var value = ParseNumericCell(worksheet.Cell(row, monthStartColumn + monthIndex));
                     if (value is null)
                     {
                         continue;
                     }
 
-                    aggregate.SetSale(year, monthIndex, value.Value);
+                    aggregate.SetSale(year, monthIndex, decimal.Truncate(value.Value));
                 }
             }
         }
@@ -116,6 +125,13 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
     private static int ParseYearFromPath(string filePath) =>
         ParseFirstYear(Path.GetFileNameWithoutExtension(filePath)) ?? int.MinValue;
 
+    private static bool ShouldIgnoreFile(string filePath)
+    {
+        var fileName = Path.GetFileName(filePath);
+        return fileName.StartsWith("~", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Contains("pedido", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int? ParseFirstYear(string value)
     {
         var match = YearRegex.Match(value);
@@ -133,17 +149,17 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 
         if (cell.TryGetValue<decimal>(out var decimalValue))
         {
-            return decimalValue;
+            return decimal.Truncate(decimalValue);
         }
 
         if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimalValue))
         {
-            return decimalValue;
+            return decimal.Truncate(decimalValue);
         }
 
         if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out decimalValue))
         {
-            return decimalValue;
+            return decimal.Truncate(decimalValue);
         }
 
         throw new InvalidOperationException($"Cell '{cell.Address}' contains a non-numeric value: '{text}'.");
