@@ -13,6 +13,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{99B725BD
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PedidoSugerido.Tests", "tests\PedidoSugerido.Tests\PedidoSugerido.Tests.csproj", "{D3796FEC-2800-4C65-8E48-A58DB831BC3C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PedidoSugerido.CliStockAware", "src\PedidoSugerido.CliStockAware\PedidoSugerido.CliStockAware.csproj", "{7074714E-32A2-4266-B950-F42E4C3ED772}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -34,10 +36,15 @@ Global
 		{D3796FEC-2800-4C65-8E48-A58DB831BC3C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D3796FEC-2800-4C65-8E48-A58DB831BC3C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D3796FEC-2800-4C65-8E48-A58DB831BC3C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7074714E-32A2-4266-B950-F42E4C3ED772}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7074714E-32A2-4266-B950-F42E4C3ED772}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7074714E-32A2-4266-B950-F42E4C3ED772}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7074714E-32A2-4266-B950-F42E4C3ED772}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{14A315BF-432F-45E2-B3D8-6F2D8CB93BAC} = {EE8A0004-237D-44C6-A2BC-075526B0FF81}
 		{167EE3A7-C1A1-45AD-936F-3777257515FC} = {EE8A0004-237D-44C6-A2BC-075526B0FF81}
 		{D3796FEC-2800-4C65-8E48-A58DB831BC3C} = {99B725BD-5541-43CA-AFFA-83929EBFE930}
+		{7074714E-32A2-4266-B950-F42E4C3ED772} = {EE8A0004-237D-44C6-A2BC-075526B0FF81}
 	EndGlobalSection
 EndGlobal
