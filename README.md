@@ -197,6 +197,42 @@ dotnet run --project .\src\PedidoSugerido.Cli -- `
 
 Eso equivale a cobertura de `junio 2026` a `octubre 2026`.
 
+## Formato con stock por mes (`CliStockAware`)
+
+Para archivos que traen, por cada mes, las unidades vendidas y el stock inicial del mes. Los meses sin stock (stock inicial 0 y venta 0) se imputan con la mediana de ese mismo mes en años con stock.
+
+Columnas: `Codigo`, `Modelo`, `Producto`, `Stock actual`, y luego por cada mes de enero a diciembre:
+
+- Formato normal, 2 columnas por mes: `Unidades`, `StockInicial`
+- Formato con venta sin IVA, 3 columnas por mes: `Unidades`, `VentaSinIVA`, `StockInicial`
+
+Formato normal (2 columnas por mes):
+
+```powershell
+dotnet run --project .\src\PedidoSugerido.CliStockAware -- `
+  --input-dir "C:\Ruta\A\Excels" `
+  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
+  --coverage-start-date 2027-01-01 `
+  --coverage-end-date 2027-12-31 `
+  --delivery-date 2026-12-31 `
+  --today 2026-09-21
+```
+
+Formato con venta sin IVA (3 columnas por mes): el mismo comando agregando `--tres-columnas`:
+
+```powershell
+dotnet run --project .\src\PedidoSugerido.CliStockAware -- `
+  --input-dir "C:\Ruta\A\Excels" `
+  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
+  --coverage-start-date 2027-01-01 `
+  --coverage-end-date 2027-12-31 `
+  --delivery-date 2026-12-31 `
+  --today 2026-09-21 `
+  --tres-columnas
+```
+
+Si el archivo no coincide con el formato elegido, la aplicacion se detiene con un error que indica si hay que agregar o quitar `--tres-columnas`; nunca calcula con columnas mezcladas.
+
 ## Ejecucion interactiva
 
 Si no pasas todos los argumentos, la app pregunta lo que falta:

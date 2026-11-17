@@ -39,27 +39,26 @@ public sealed class ForecastCalculationEngine
             ? (request.DeliveryDate.DayNumber - request.Today.DayNumber) / LeadTimeDaysPerMonth
             : 0m;
 
-        var coverageMonths = GetCoverageMonths(
-            request.Coverage.StartMonthIndex,
-            request.Coverage.EndMonthIndex);
+        var coveragePeriod = BuildMonthSequence(
+            new DateOnly(request.Coverage.StartDate.Year, request.Coverage.StartDate.Month, 1),
+            new DateOnly(request.Coverage.EndDate.Year, request.Coverage.EndDate.Month, 1));
 
-        var bridgeMonths = GetBridgeMonths(
-            request.Today.Month - 1,
-            request.Coverage.StartMonthIndex);
+        var bridgePeriod = BuildBridgeSequence(request.Today, request.Coverage.StartDate);
+        var coverageMonths = coveragePeriod.Select(x => x.MonthIndex).ToList();
 
         var average = allValues.Count == 0 ? 0m : allValues.Average();
         var minimum = allValues.Count == 0 ? 0m : allValues.Min();
         var maximum = allValues.Count == 0 ? 0m : allValues.Max();
         var exponential = CalculateExponentialSmoothing(allValues);
         var seasonalCoverageDemand = CalculateSeasonalCoverageDemand(orderedSales, coverageMonths);
-        var gonzalez = CalculateGonzalezRuiz(product, bridgeMonths, coverageMonths);
+        var gonzalez = CalculateGonzalezRuiz(product, bridgePeriod, coveragePeriod);
         var totalDemand = allValues.Sum();
         var isSeasonal = Statistics.CoefficientOfVariation(allValues) > 0.8m;
 
         return new ProductComputationContext(
             product,
             leadTimeMonths,
-            coverageMonths,
+            coveragePeriod,
             average,
             minimum,
             maximum,
@@ -118,8 +117,8 @@ public sealed class ForecastCalculationEngine
 
     private static GonzalezRuizBreakdown CalculateGonzalezRuiz(
         ProductHistory product,
-        IReadOnlyList<int> bridgeMonths,
-        IReadOnlyList<int> coverageMonths)
+        IReadOnlyList<HistoricalMonth> bridgeMonths,
+        IReadOnlyList<HistoricalMonth> coverageMonths)
     {
         var salesLookup = product.Sales.ToDictionary(x => (x.Year, x.MonthIndex), x => x.Value);
         var years = product.Sales.Select(x => x.Year).Distinct().OrderBy(x => x).ToList();
@@ -128,15 +127,15 @@ public sealed class ForecastCalculationEngine
 
         foreach (var anchorYear in years)
         {
-            var hasCoverage = coverageMonths.Any(monthIndex => salesLookup.ContainsKey((anchorYear, monthIndex)));
+            var hasCoverage = coverageMonths.Any(month => salesLookup.ContainsKey((anchorYear, month.MonthIndex)));
             if (!hasCoverage)
             {
                 continue;
             }
 
-            var bridgeDemand = bridgeMonths.Sum(monthIndex => salesLookup.GetValueOrDefault((anchorYear, monthIndex), 0m));
-            var coverageDemand = coverageMonths.Sum(monthIndex => salesLookup.GetValueOrDefault((anchorYear, monthIndex), 0m));
-            var full = periodMonths.Sum(monthIndex => salesLookup.GetValueOrDefault((anchorYear, monthIndex), 0m));
+            var bridgeDemand = bridgeMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
+            var coverageDemand = coverageMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
+            var full = periodMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
             windowResults.Add((bridgeDemand, coverageDemand, full, Math.Max(0m, full - product.CurrentStock)));
         }
 
@@ -223,34 +222,45 @@ public sealed class ForecastCalculationEngine
 
     private static decimal ClampToOrder(decimal raw) => raw <= 0m ? 0m : Math.Ceiling(raw);
 
-    private static IReadOnlyList<int> GetCoverageMonths(int coverageStartMonthIndex, int coverageEndMonthIndex)
+    private static IReadOnlyList<HistoricalMonth> BuildMonthSequence(DateOnly startMonth, DateOnly endMonth)
     {
-        if (coverageEndMonthIndex < coverageStartMonthIndex)
+        var months = new List<HistoricalMonth>();
+        var current = startMonth;
+        var yearOffset = 0;
+
+        while (true)
         {
-            return
-            [
-                ..Enumerable.Range(coverageStartMonthIndex, 12 - coverageStartMonthIndex),
-                ..Enumerable.Range(0, coverageEndMonthIndex + 1)
-            ];
+            months.Add(new HistoricalMonth(current.Month - 1, yearOffset));
+            if (current.Year == endMonth.Year && current.Month == endMonth.Month)
+            {
+                break;
+            }
+
+            current = current.AddMonths(1);
+            yearOffset = current.Year - startMonth.Year;
         }
 
-        return Enumerable.Range(coverageStartMonthIndex, coverageEndMonthIndex - coverageStartMonthIndex + 1).ToList();
+        return months;
     }
 
-    private static IReadOnlyList<int> GetBridgeMonths(int currentMonthIndex, int coverageStartMonthIndex)
+    private static IReadOnlyList<HistoricalMonth> BuildBridgeSequence(DateOnly today, DateOnly coverageStartDate)
     {
-        if (coverageStartMonthIndex <= currentMonthIndex)
+        var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
+        var coverageStartMonth = new DateOnly(coverageStartDate.Year, coverageStartDate.Month, 1);
+
+        if (coverageStartMonth <= currentMonthStart)
         {
-            return Array.Empty<int>();
+            return Array.Empty<HistoricalMonth>();
         }
 
-        return Enumerable.Range(currentMonthIndex, coverageStartMonthIndex - currentMonthIndex).ToList();
+        var bridgeEnd = coverageStartMonth.AddMonths(-1);
+        return BuildMonthSequence(currentMonthStart, bridgeEnd);
     }
 
     private sealed record ProductComputationContext(
         ProductHistory Product,
         decimal LeadTimeMonths,
-        IReadOnlyList<int> CoverageMonths,
+        IReadOnlyList<HistoricalMonth> CoverageMonths,
         decimal AverageDemand,
         decimal MinimumDemand,
         decimal MaximumDemand,
@@ -259,6 +269,8 @@ public sealed class ForecastCalculationEngine
         GonzalezRuizBreakdown GonzalezRuiz,
         decimal TotalHistoricalDemand,
         bool IsSeasonal);
+
+    private sealed record HistoricalMonth(int MonthIndex, int YearOffset);
 
     private sealed record WeightProfile(
         decimal GonzalezRuiz,

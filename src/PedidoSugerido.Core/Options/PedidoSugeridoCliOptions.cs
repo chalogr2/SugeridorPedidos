@@ -5,24 +5,22 @@ namespace PedidoSugerido.Core.Options;
 public sealed record PedidoSugeridoCliOptions(
     string InputDirectory,
     string OutputPath,
-    int CoverageStartMonthIndex,
-    int CoverageEndMonthIndex,
+    CoverageWindow Coverage,
     DateOnly DeliveryDate,
     DateOnly Today)
 {
     public bool IsValid =>
         !string.IsNullOrWhiteSpace(InputDirectory) &&
         !string.IsNullOrWhiteSpace(OutputPath) &&
-        CoverageStartMonthIndex is >= 0 and <= 11 &&
-        CoverageEndMonthIndex is >= 0 and <= 11 &&
+        Coverage.StartDate != default &&
+        Coverage.EndDate != default &&
+        Coverage.EndDate.DayNumber >= Coverage.StartDate.DayNumber &&
         DeliveryDate != default &&
         Today != default &&
         DeliveryDate.DayNumber >= Today.DayNumber;
 
-    public CoverageWindow Coverage => new(CoverageStartMonthIndex, CoverageEndMonthIndex);
-
     public static string Usage =>
-        "Usage: PedidoSugerido.Cli --input-dir <dir> --output <file.xlsx> --coverage-start <0-11> --coverage-end <0-11> --delivery-date <yyyy-MM-dd> --today <yyyy-MM-dd>";
+        "Usage: PedidoSugerido.Cli --input-dir <dir> --output <file.xlsx> --coverage-start-date <yyyy-MM-dd> --coverage-end-date <yyyy-MM-dd> --delivery-date <yyyy-MM-dd> --today <yyyy-MM-dd>";
 
     public static PedidoSugeridoCliOptions Resolve(string[] args)
     {
@@ -42,18 +40,20 @@ public sealed record PedidoSugeridoCliOptions(
             }
         }
 
+        var today = ParseDate(values, "--today");
+        var coverage = ResolveCoverage(values, today);
+
         return new PedidoSugeridoCliOptions(
             values.GetValueOrDefault("--input-dir", string.Empty),
             values.GetValueOrDefault("--output", string.Empty),
-            ParseInt(values, "--coverage-start"),
-            ParseInt(values, "--coverage-end"),
+            coverage,
             ParseDate(values, "--delivery-date"),
-            ParseDate(values, "--today"));
+            today);
     }
 
     private static PedidoSugeridoCliOptions PromptForMissingValues(PedidoSugeridoCliOptions partial)
     {
-        Console.WriteLine("Parámetros faltantes o inválidos. Ingrese los valores requeridos.");
+        Console.WriteLine("Parametros faltantes o invalidos. Ingrese los valores requeridos.");
 
         var inputDirectory = PromptString("Directorio de entrada", partial.InputDirectory);
         var outputPath = PromptString(
@@ -62,18 +62,21 @@ public sealed record PedidoSugeridoCliOptions(
                 ? Path.Combine(inputDirectory, "pedido-sugerido.xlsx")
                 : partial.OutputPath);
 
-        var coverageStart = PromptMonth("Mes inicio cobertura (1-12)", partial.CoverageStartMonthIndex);
-        var coverageEnd = PromptMonth("Mes fin cobertura (1-12)", partial.CoverageEndMonthIndex);
         var todayDefault = partial.Today == default ? DateOnly.FromDateTime(DateTime.Today) : partial.Today;
         var today = PromptDate("Fecha de hoy (yyyy-MM-dd)", todayDefault);
+
+        var coverageStartDefault = partial.Coverage.StartDate == default ? today : partial.Coverage.StartDate;
+        var coverageStart = PromptDate("Fecha inicio cobertura (yyyy-MM-dd)", coverageStartDefault);
+        var coverageEndDefault = partial.Coverage.EndDate == default ? coverageStart : partial.Coverage.EndDate;
+        var coverageEnd = PromptDate("Fecha fin cobertura (yyyy-MM-dd)", coverageEndDefault);
+
         var deliveryDefault = partial.DeliveryDate == default ? today : partial.DeliveryDate;
         var deliveryDate = PromptDate("Fecha esperada de llegada (yyyy-MM-dd)", deliveryDefault);
 
         var resolved = new PedidoSugeridoCliOptions(
             inputDirectory,
             outputPath,
-            coverageStart,
-            coverageEnd,
+            new CoverageWindow(coverageStart, coverageEnd),
             deliveryDate,
             today);
 
@@ -83,6 +86,31 @@ public sealed record PedidoSugeridoCliOptions(
         }
 
         return resolved;
+    }
+
+    private static CoverageWindow ResolveCoverage(IReadOnlyDictionary<string, string> values, DateOnly today)
+    {
+        var explicitStart = ParseDate(values, "--coverage-start-date");
+        var explicitEnd = ParseDate(values, "--coverage-end-date");
+        if (explicitStart != default && explicitEnd != default)
+        {
+            return new CoverageWindow(
+                new DateOnly(explicitStart.Year, explicitStart.Month, 1),
+                new DateOnly(explicitEnd.Year, explicitEnd.Month, DateTime.DaysInMonth(explicitEnd.Year, explicitEnd.Month)));
+        }
+
+        var monthStart = ParseInt(values, "--coverage-start");
+        var monthEnd = ParseInt(values, "--coverage-end");
+        if (monthStart is < 0 or > 11 || monthEnd is < 0 or > 11 || today == default)
+        {
+            return new CoverageWindow(default, default);
+        }
+
+        var startYear = today.Year;
+        var endYear = monthEnd < monthStart ? today.Year + 1 : today.Year;
+        return new CoverageWindow(
+            new DateOnly(startYear, monthStart + 1, 1),
+            new DateOnly(endYear, monthEnd + 1, DateTime.DaysInMonth(endYear, monthEnd + 1)));
     }
 
     private static int ParseInt(IReadOnlyDictionary<string, string> values, string key) =>
@@ -100,32 +128,13 @@ public sealed record PedidoSugeridoCliOptions(
         return string.IsNullOrWhiteSpace(input) ? currentValue : input;
     }
 
-    private static int PromptMonth(string label, int currentValue)
-    {
-        while (true)
-        {
-            var defaultDisplay = currentValue is >= 0 and <= 11 ? (currentValue + 1).ToString() : string.Empty;
-            Console.Write($"{label}{FormatDefault(defaultDisplay)}: ");
-            var input = Console.ReadLine()?.Trim();
-            if (string.IsNullOrWhiteSpace(input) && currentValue is >= 0 and <= 11)
-            {
-                return currentValue;
-            }
-
-            if (int.TryParse(input, out var monthNumber) && monthNumber is >= 1 and <= 12)
-            {
-                return monthNumber - 1;
-            }
-        }
-    }
-
     private static DateOnly PromptDate(string label, DateOnly currentValue)
     {
         while (true)
         {
-            Console.Write($"{label}{FormatDefault(currentValue.ToString("yyyy-MM-dd"))}: ");
+            Console.Write($"{label}{FormatDefault(currentValue == default ? string.Empty : currentValue.ToString("yyyy-MM-dd"))}: ");
             var input = Console.ReadLine()?.Trim();
-            if (string.IsNullOrWhiteSpace(input))
+            if (string.IsNullOrWhiteSpace(input) && currentValue != default)
             {
                 return currentValue;
             }

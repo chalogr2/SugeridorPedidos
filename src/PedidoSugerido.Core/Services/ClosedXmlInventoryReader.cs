@@ -31,9 +31,17 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 
         var aggregators = new Dictionary<string, ProductAggregate>(StringComparer.OrdinalIgnoreCase);
 
+        var readFiles = new List<string>();
+
         foreach (var file in files)
         {
             using var workbook = new XLWorkbook(file);
+            if (IsPedidoOutput(workbook))
+            {
+                continue;
+            }
+
+            readFiles.Add(file);
             var worksheet = SelectDataWorksheet(workbook)
                 ?? throw new InvalidOperationException($"No data worksheet found in '{file}'.");
 
@@ -43,7 +51,16 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
             var headers = Enumerable.Range(1, lastColumn)
                 .Select(column => worksheet.Cell(1, column).GetString())
                 .ToList();
-            var hasSaldo = headers.Any(header => string.Equals(header, "SaldoActual", StringComparison.Ordinal));
+            if (headers.Any(header => header.Trim().EndsWith("_StockInicial", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"'{file}' uses the stock-aware format (monthly sales + StockInicial columns). Run PedidoSugerido.CliStockAware instead.");
+            }
+
+            var hasSaldo = headers.Any(header =>
+                string.Equals(header.Trim(), "SaldoActual", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(header.Trim(), "Saldo Actual", StringComparison.OrdinalIgnoreCase) ||
+                header.Contains("saldo", StringComparison.OrdinalIgnoreCase));
             var monthStartColumn = hasSaldo ? 5 : 4;
 
             if (lastColumn < 17)
@@ -55,7 +72,7 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
             for (var row = 2; row <= lastRow; row++)
             {
                 var code = worksheet.Cell(row, 1).GetString().Trim();
-                if (string.IsNullOrWhiteSpace(code))
+                if (string.IsNullOrWhiteSpace(code) || code.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -95,8 +112,17 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
             .OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new InventoryDataset(products, files);
+        if (readFiles.Count == 0)
+        {
+            throw new InvalidOperationException($"No sales .xlsx files were found in '{inputDirectory}'.");
+        }
+
+        return new InventoryDataset(products, readFiles);
     }
+
+    // Previous pedido outputs often sit next to the sales files; they always start with this sheet.
+    private static bool IsPedidoOutput(XLWorkbook workbook) =>
+        workbook.Worksheets.First().Name.Equals("Todos los Productos", StringComparison.OrdinalIgnoreCase);
 
     private static IXLWorksheet? SelectDataWorksheet(XLWorkbook workbook) =>
         workbook.Worksheets.FirstOrDefault(sheet =>

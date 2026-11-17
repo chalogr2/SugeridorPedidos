@@ -1,3 +1,11 @@
 bin/
 obj/
 .vs/
+
+# Excel / data files (never commit business data)
+*.xlsx
+*.xlsm
+*.xls
+*.xlsb
+*.csv
+~$*

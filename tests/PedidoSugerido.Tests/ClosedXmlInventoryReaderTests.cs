@@ -91,7 +91,7 @@ public sealed class ClosedXmlInventoryReaderTests
         ws.Cell(1, 1).Value = "Codigo";
         ws.Cell(1, 2).Value = "Nombre";
         ws.Cell(1, 3).Value = "Modelo";
-        ws.Cell(1, 4).Value = "Saldo";
+        ws.Cell(1, 4).Value = "SaldoActual";
 
         for (var month = 0; month < 12; month++)
         {

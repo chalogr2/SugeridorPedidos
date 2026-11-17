@@ -7,10 +7,17 @@ namespace PedidoSugerido.Core.Application;
 
 public sealed class CliStockAwareStartup
 {
+    private const string ThreeColumnFlag = "--tres-columnas";
+
     public int Run(string[] args)
     {
         try
         {
+            var layout = args.Contains(ThreeColumnFlag, StringComparer.OrdinalIgnoreCase)
+                ? StockAwareLayout.SalesMoneyAndStock
+                : StockAwareLayout.SalesAndStock;
+            args = args.Where(arg => !arg.Equals(ThreeColumnFlag, StringComparison.OrdinalIgnoreCase)).ToArray();
+
             var options = PedidoSugeridoCliOptions.Resolve(args);
             var request = new PedidoSugeridoRequest(
                 options.InputDirectory,
@@ -19,9 +26,9 @@ public sealed class CliStockAwareStartup
                 options.DeliveryDate,
                 options.Today);
 
-            var application = BuildApplication();
+            var application = BuildApplication(layout);
             var result = application.Run(request);
-            WriteSummary(result);
+            WriteSummary(result, layout);
 
             return 0;
         }
@@ -32,20 +39,23 @@ public sealed class CliStockAwareStartup
         }
     }
 
-    private static IPedidoSugeridoApplication BuildApplication()
+    private static IPedidoSugeridoApplication BuildApplication(StockAwareLayout layout)
     {
-        IExcelInventoryReader reader = new ClosedXmlStockAwareInventoryReader();
+        IExcelInventoryReader reader = new ClosedXmlStockAwareInventoryReader(layout);
         IExcelReportWriter writer = new ClosedXmlReportWriter();
         var forecastEngine = new ForecastCalculationEngine();
         return new PedidoSugeridoApplication(reader, forecastEngine, writer);
     }
 
-    private static void WriteSummary(PedidoSugeridoResult result)
+    private static void WriteSummary(PedidoSugeridoResult result, StockAwareLayout layout)
     {
         Console.WriteLine($"Archivos leidos: {result.Dataset.SourceFiles.Count}");
         Console.WriteLine($"Productos consolidados: {result.Dataset.Products.Count}");
         Console.WriteLine($"Archivo generado: {result.Request.OutputPath}");
         Console.WriteLine("Modo: stock-aware (meses sin stock imputados a partir de meses con stock).");
+        Console.WriteLine(layout == StockAwareLayout.SalesMoneyAndStock
+            ? "Formato: 3 columnas por mes (unidades, venta sin IVA, stock inicial)."
+            : "Formato: 2 columnas por mes (unidades, stock inicial).");
 
         foreach (var product in result.Suggestions.Take(5))
         {

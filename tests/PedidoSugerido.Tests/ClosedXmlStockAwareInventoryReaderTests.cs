@@ -1,4 +1,5 @@
 using ClosedXML.Excel;
+using PedidoSugerido.Core.Models;
 using PedidoSugerido.Core.Services;
 
 namespace PedidoSugerido.Tests;
@@ -64,6 +65,98 @@ public sealed class ClosedXmlStockAwareInventoryReaderTests
 
         var janStockout = product.Sales.Single(x => x.Year == 2025 && x.MonthIndex == 0);
         Assert.Equal(5m, janStockout.Value);
+    }
+
+    [Fact]
+    public void ReadFromDirectory_ThreeColumnLayout_ReadsUnitsOnly()
+    {
+        var directory = CreateTempDirectory();
+        CreateThreeColumnWorkbook(Path.Combine(directory, "estadistico-ventas-stock-primo.xlsx"));
+
+        var dataset = new ClosedXmlStockAwareInventoryReader(StockAwareLayout.SalesMoneyAndStock).ReadFromDirectory(directory);
+
+        var product = Assert.Single(dataset.Products);
+        Assert.Equal(16m, product.CurrentStock);
+        Assert.Equal(2025, product.StockYear);
+        Assert.Equal(Enumerable.Range(1, 12).Select(x => (decimal)x), product.Sales.Select(x => x.Value));
+    }
+
+    [Fact]
+    public void ReadFromDirectory_DefaultLayout_RejectsThreeColumnFile()
+    {
+        var directory = CreateTempDirectory();
+        CreateThreeColumnWorkbook(Path.Combine(directory, "estadistico-ventas-stock-primo.xlsx"));
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new ClosedXmlStockAwareInventoryReader().ReadFromDirectory(directory));
+        Assert.Contains("--tres-columnas", error.Message);
+    }
+
+    [Fact]
+    public void ReadFromDirectory_ThreeColumnLayout_RejectsTwoColumnFile()
+    {
+        var directory = CreateTempDirectory();
+        var values = new decimal?[12] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+        CreateStockAwareWorkbook(
+            Path.Combine(directory, "estadistico_2025.xlsx"),
+            "KUM_2025", "Total_CantVendida_2025", stockActual: 10, values, values);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new ClosedXmlStockAwareInventoryReader(StockAwareLayout.SalesMoneyAndStock).ReadFromDirectory(directory));
+        Assert.Contains("--tres-columnas", error.Message);
+    }
+
+    [Fact]
+    public void ReadFromDirectory_SkipsPreviousPedidoOutputs()
+    {
+        var directory = CreateTempDirectory();
+        var values = new decimal?[12] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+        CreateStockAwareWorkbook(
+            Path.Combine(directory, "estadistico_2025.xlsx"),
+            "KUM_2025", "Total_CantVendida_2025", stockActual: 10, values, values);
+        using (var output = new XLWorkbook())
+        {
+            output.Worksheets.Add("Todos los Productos").Cell(1, 1).Value = "Código";
+            output.SaveAs(Path.Combine(directory, "KUMconSTOCK2026.xlsx"));
+        }
+
+        var dataset = new ClosedXmlStockAwareInventoryReader().ReadFromDirectory(directory);
+
+        Assert.Single(dataset.SourceFiles);
+        Assert.Single(dataset.Products);
+    }
+
+    private static void CreateThreeColumnWorkbook(string path)
+    {
+        var months = new[] { "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic" };
+
+        using (var workbook = new XLWorkbook())
+        {
+            var ws = workbook.Worksheets.Add("PRIMO_2025");
+            ws.Cell(1, 1).Value = "Código";
+            ws.Cell(1, 2).Value = "Modelo";
+            ws.Cell(1, 3).Value = "Producto";
+            ws.Cell(1, 4).Value = "Stock actual";
+            ws.Cell(2, 1).Value = "59002";
+            ws.Cell(2, 2).Value = "206VT3";
+            ws.Cell(2, 3).Value = "Depósitos plásticos";
+            ws.Cell(2, 4).Value = 16;
+            for (var i = 0; i < 12; i++)
+            {
+                var column = 5 + (i * 3);
+                ws.Cell(1, column).Value = $"{months[i]}_Unidades";
+                ws.Cell(1, column + 1).Value = $"{months[i]}_VentaSinIVA";
+                ws.Cell(1, column + 2).Value = $"{months[i]}_StockInicial";
+                ws.Cell(2, column).Value = i + 1;
+                ws.Cell(2, column + 1).Value = (i + 1) * 1.55;
+                ws.Cell(2, column + 2).Value = 60 - i;
+            }
+
+            ws.Cell(1, 41).Value = "Total unidades 2025";
+            ws.Cell(1, 42).Value = "Total venta sin IVA 2025";
+            workbook.Worksheets.Add("Metodología");
+            workbook.SaveAs(path);
+        }
     }
 
     private static void CreateStockAwareWorkbook(
