@@ -1,326 +1,164 @@
-# SugeridorPedidos
+# Purchase Order Suggester
 
-Aplicacion local en `.NET 8` para generar pedidos sugeridos de inventario a partir de archivos Excel con ventas mensuales historicas por producto.
+A command-line tool that reads a few years of monthly sales history from Excel and tells you how much of each product to order for an upcoming period. It runs several forecasting methods side by side, so you can compare them before deciding, and writes the results to a new Excel workbook.
 
-No usa:
-- web app
-- base de datos
-- nube
-- APIs
-- IA en runtime
+I built it for my own business and use it for real purchasing. Everything runs locally: no database, no cloud services, no web app. The Excel files are read and written with [ClosedXML](https://github.com/ClosedXML/ClosedXML).
 
-Todo el procesamiento ocurre localmente con `ClosedXML`.
+## How it works
 
-## Que hace
+1. You export one Excel file per year with sales per product per month, plus current stock.
+2. You tell the tool which months the order needs to cover and when it is expected to arrive.
+3. It combines all years by product code and works out, for each product, how many units will be needed between today and the end of the coverage period.
+4. It subtracts current stock and writes a suggested order for each method.
 
-Lee uno o varios archivos `.xlsx` con ventas historicas por año, consolida la informacion por codigo de producto y genera un archivo Excel con 7 metodos de pedido sugerido:
+There are two programs, one for each kind of export:
 
-1. `Gonzalez Ruiz`
-2. `Promedio`
-3. `Minimos`
-4. `Maximos`
-5. `Exp Smoothing`
-6. `Estacional`
-7. `Recomendacion Claude`
+| Program | Input |
+| --- | --- |
+| `PedidoSugerido.Cli` | Monthly units sold, one column per month |
+| `PedidoSugerido.CliStockAware` | Monthly units sold plus the stock at the start of each month, so months where the product was out of stock can be corrected |
 
-El archivo de salida contiene 4 hojas:
+## Requirements
 
-1. `Todos los Productos`
-2. `Filtrado (Pedido > 0)`
-3. `Filtrado Sin Máximos`
-4. `Filtrado Sin Máx ni Claude`
-
-## Requisitos
-
-- `.NET SDK 8`
-- Windows / PowerShell
-
-Verificar:
+- .NET 8 SDK
+- Windows with PowerShell (the examples use PowerShell line continuations)
 
 ```powershell
 dotnet --version
 ```
 
-## Estructura del proyecto
+## Build and test
+
+From the repository root:
+
+```powershell
+dotnet build .\PedidoSugerido.sln
+dotnet test .\PedidoSugerido.sln
+```
+
+## Quick start
+
+```powershell
+dotnet run --project .\src\PedidoSugerido.Cli -- `
+  --input-dir "C:\Path\To\SalesFiles" `
+  --output "C:\Path\To\Output\suggested-order.xlsx" `
+  --coverage-start-date 2027-01-01 `
+  --coverage-end-date 2027-12-31 `
+  --delivery-date 2026-12-31 `
+  --today 2026-11-17
+```
+
+This asks: given today's date, how much should I order so it arrives by December 31 and covers all of 2027? Run either program with `--help` to see every option.
+
+## Command-line options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `--input-dir` | Yes | Folder with the yearly sales files (`.xlsx`) |
+| `--output` | Yes | Report to create (`.xlsx`) |
+| `--coverage-start-date` | Yes* | First month the order must cover (`yyyy-MM-dd`, the day is ignored) |
+| `--coverage-end-date` | Yes* | Last month the order must cover (`yyyy-MM-dd`, the day is ignored) |
+| `--delivery-date` | Yes | Date the order is expected to arrive (`yyyy-MM-dd`) |
+| `--today` | Yes | Reference date for the calculation (`yyyy-MM-dd`) |
+| `--tres-columnas` | No | Stock-aware program only. Use it when the files have 3 columns per month instead of 2 (see below) |
+| `--help` | No | Show usage |
+
+\* Instead of coverage dates you can pass the older `--coverage-start` and `--coverage-end` month indexes, where 0 is January and 11 is December. They are relative to `--today`, so `--coverage-start 5 --coverage-end 9` with `--today 2026-03-20` covers June to October 2026. If the end month comes before the start month, the coverage runs into the next year.
+
+The tool is strict about its arguments, because a quietly wrong date means a wrong order:
+
+- An unknown option, an option without a value, a repeated option or an invalid value stops the run with exit code 1 and a message explaining what is wrong.
+- Dates must be in `yyyy-MM-dd` format.
+- The delivery date cannot be before today, and the coverage cannot end before it starts.
+- If values are missing and you are in a terminal, the tool asks for them. If it is running from a script or scheduled task, missing values are an error. It never fills in defaults on its own.
+
+## Input files
+
+### Basic format (`PedidoSugerido.Cli`)
+
+One `.xlsx` file per year. The tool uses the first worksheet whose name is not `Control` and does not contain `Exclu`, so you can keep helper sheets in the same workbook.
+
+| Column | Content |
+| --- | --- |
+| 1 | Product code |
+| 2 | Product name |
+| 3 | Product model |
+| 4 | Current stock |
+| 5 to 16 | Units sold, January to December |
+| 17 | Yearly total, with the year in the header (for example `TotalAnual2025`) |
+
+The header of column 4 must start with `Saldo`, `Stock`, `Existencia` or `Inventario` (case, spaces and accents are ignored). If it doesn't, the run stops. Months are read by position, so guessing wrong here would set every product's stock to zero and shift every month by one.
+
+### Stock-aware format (`PedidoSugerido.CliStockAware`)
+
+Columns 1 to 4 are product code, model, name and current stock. After that, each month from January to December has either:
+
+- **2 columns:** units sold, stock at the start of the month
+- **3 columns:** units sold, sales amount before tax, stock at the start of the month (add `--tres-columnas`)
+
+The stock column header for each month must contain the word "stock", and the sales header must not. If the file doesn't match the layout you chose, the tool stops and tells you whether to add or remove `--tres-columnas`.
+
+When a month started with zero stock and sold nothing, the product simply wasn't available, so that zero isn't real demand. The tool replaces it with the median of the same month in years where the product was in stock. If there are none, it uses the median of all in-stock months.
+
+### Rules for both formats
+
+- **Year:** taken from the header of the yearly total column. If that doesn't work, it's taken from the file name (for example `sales_2025.xlsx`). If neither has a year, the run stops.
+- **Several years:** all files are merged by product code. Current stock comes from the most recent year.
+- **Duplicates:** a product can appear only once per year. A repeated code in a sheet, or two files for the same year, stops the run with an error that names both locations.
+- **Empty cells:** empty cells and cells that say `no data` are treated as missing, not as zero.
+- **Numbers stored as text:** these are accepted when unambiguous, such as `1234`, `12.5`, `12,5`, `1,234` or `1.234,5`. Any other text in a number column stops the run.
+- **Skipped files:** files with `pedido` in the name, and previous reports from this tool, are skipped. You can keep old reports in the same folder.
+
+## Forecasting methods
+
+Each method estimates demand for the order period and subtracts current stock. Results are rounded up, and anything below zero becomes zero.
+
+The **bridge** is the months from the current month up to the coverage start. The order has to last through them too, because current stock is used up during that time.
+
+**González Ruiz.** For each past year, add up that year's sales for the bridge and coverage months. A month is counted as many times as it appears in the period, so a 14-month period with two Novembers counts November twice. Subtract stock from each year's total, then average across years. A year is only used if it has data for every month in the period, so a half-finished current year doesn't drag the average down. If a product has no complete year, partial years are used and the tool prints a warning.
+
+**González Ruiz per-month.** The same period, but each month's demand is the average of that calendar month across every year that has it. This includes the real months of an unfinished year. Stock is subtracted once at the end. When all years are complete, it usually matches González Ruiz. It differs when stock sits between what different years needed: González Ruiz subtracts stock year by year before averaging, while this method averages first.
+
+**Average.** Takes the average of every month in the history and multiplies it by the coverage months plus the lead time. The lead time is the time between today and delivery.
+
+**Minimum.** The same as Average, but using the lowest month in the history.
+
+**Maximum.** The same as Average, but using the highest month in the history.
+
+**Exponential smoothing.** Smooths the full monthly series in date order (alpha 0.3). The smoothed value is used as the monthly demand.
+
+**Seasonal.** For each coverage month, takes the average of that calendar month across all years. Lead time demand is added on top, using the overall monthly average.
+
+**Weighted recommendation.** A weighted blend of González Ruiz, Seasonal, Exponential smoothing, Average, Minimum and Maximum. The weights depend on whether the product is highly seasonal and on its ABC class, which ranks products by total historical demand. The per-month variant is not included in the blend.
+
+## Output
+
+A workbook with four sheets:
+
+1. All products
+2. Products with any suggested order above zero
+3. The same as sheet 2, without the Maximum column
+4. The same as sheet 3, without the weighted recommendation
+
+Each sheet has the product code, name, model, current stock and one column per method, with frozen headers and filters. The two González Ruiz columns and the weighted recommendation are highlighted.
+
+If the output file already exists, it is only replaced when it is a previous report from this tool. A sales file or any other workbook is never overwritten.
+
+## Project structure
 
 ```text
-src/PedidoSugerido.Core
-src/PedidoSugerido.Cli
-tests/PedidoSugerido.Tests
-```
-
-## Formato esperado de los Excel de entrada
-
-Cada archivo:
-- debe ser `.xlsx`
-- normalmente representa un año
-- puede tener varias hojas
-
-La aplicacion usa la primera hoja que:
-- no se llame `Control`
-- no contenga `Exclu` en el nombre
-
-Las columnas esperadas son:
-
-1. `Codigo del producto`
-2. `Nombre del producto`
-3. `Modelo del producto`
-4. `SaldoActual` o similar
-5. `Enero`
-6. `Febrero`
-7. `Marzo`
-8. `Abril`
-9. `Mayo`
-10. `Junio`
-11. `Julio`
-12. `Agosto`
-13. `Septiembre`
-14. `Octubre`
-15. `Noviembre`
-16. `Diciembre`
-17. `TotalAnual####`
-
-Notas:
-- si una celda dice `no data`, se ignora
-- si hay archivos con `pedido` en el nombre, la app los ignora para no releer salidas anteriores
-- si no puede sacar el año del encabezado `TotalAnual####`, intenta leerlo del nombre del archivo
-
-## Como identifica el año de cada Excel
-
-El año se detecta asi, en este orden:
-
-1. Desde la columna 17, por ejemplo `TotalAnual2025`
-2. Si no existe, desde el nombre del archivo, por ejemplo `ventas_2025.xlsx`
-
-Si no puede encontrar el año en ninguno de los dos lugares, la ejecucion falla.
-
-## Como usa varios archivos de distintos años
-
-Si agregas varios Excel de distintos años, la app consolida todo por `codigo de producto`.
-
-Ejemplo:
-- `ventas_2023.xlsx`
-- `ventas_2024.xlsx`
-- `ventas_2025.xlsx`
-
-Para un mismo producto, la app arma un historial con:
-- Enero-Diciembre 2023
-- Enero-Diciembre 2024
-- Enero-Diciembre 2025
-
-El `stock` usado es el del archivo mas reciente para ese producto.
-
-### Como calcula cada columna con varios años
-
-`Gonzalez Ruiz`
-- Calcula un resultado por cada año historico que tenga datos de los meses de cobertura.
-- Si la cobertura dura mas de 12 meses, repite el mismo ciclo de meses dentro de ese mismo año historico.
-- Luego promedia los resultados anuales y redondea hacia arriba.
-
-`Promedio`
-- Junta todos los meses validos de todos los años en una sola serie.
-- Calcula un promedio mensual global.
-- Usa ese promedio para cobertura + lead time.
-
-`Minimos`
-- Usa el menor valor mensual encontrado en toda la historia consolidada.
-
-`Maximos`
-- Usa el mayor valor mensual encontrado en toda la historia consolidada.
-
-`Exp Smoothing`
-- Ordena todos los meses cronologicamente a traves de todos los años.
-- Aplica suavizamiento exponencial sobre toda la serie.
-
-`Estacional`
-- Para cada mes de cobertura, promedia ese mismo mes entre todos los años disponibles.
-- Si la cobertura repite un mes por durar mas de 12 meses, ese mes se vuelve a contar.
-
-`Recomendacion Claude`
-- Calcula primero los 6 metodos anteriores.
-- Luego pondera segun estacionalidad y clasificacion ABC.
-
-## Build
-
-Desde la raiz del repo:
-
-```powershell
-dotnet restore .\PedidoSugerido.sln
-dotnet build .\PedidoSugerido.sln
-```
-
-## Ejecutar
-
-Puedes usar fechas explicitas de cobertura o el modo legacy por indices de mes.
-
-### Opcion recomendada: fechas explicitas
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli -- `
-  --input-dir "C:\Ruta\A\Excels" `
-  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
-  --coverage-start-date 2026-06-01 `
-  --coverage-end-date 2027-06-30 `
-  --delivery-date 2026-05-31 `
-  --today 2026-03-20
-```
-
-Eso significa:
-- cobertura desde `1 de junio de 2026`
-- hasta `30 de junio de 2027`
-- inclusive por meses
-
-### Opcion legacy: indices de mes
-
-La app sigue aceptando:
-
-```powershell
---coverage-start 5 --coverage-end 9
-```
-
-Eso es `0-indexed`, o sea:
-- `0 = enero`
-- `5 = junio`
-- `9 = octubre`
-
-Ejemplo:
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli -- `
-  --input-dir "C:\Ruta\A\Excels" `
-  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
-  --coverage-start 5 `
-  --coverage-end 9 `
-  --delivery-date 2026-05-31 `
-  --today 2026-03-20
-```
-
-Eso equivale a cobertura de `junio 2026` a `octubre 2026`.
-
-## Formato con stock por mes (`CliStockAware`)
-
-Para archivos que traen, por cada mes, las unidades vendidas y el stock inicial del mes. Los meses sin stock (stock inicial 0 y venta 0) se imputan con la mediana de ese mismo mes en años con stock.
-
-Columnas: `Codigo`, `Modelo`, `Producto`, `Stock actual`, y luego por cada mes de enero a diciembre:
-
-- Formato normal, 2 columnas por mes: `Unidades`, `StockInicial`
-- Formato con venta sin IVA, 3 columnas por mes: `Unidades`, `VentaSinIVA`, `StockInicial`
-
-Formato normal (2 columnas por mes):
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.CliStockAware -- `
-  --input-dir "C:\Ruta\A\Excels" `
-  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
-  --coverage-start-date 2027-01-01 `
-  --coverage-end-date 2027-12-31 `
-  --delivery-date 2026-12-31 `
-  --today 2026-09-21
-```
-
-Formato con venta sin IVA (3 columnas por mes): el mismo comando agregando `--tres-columnas`:
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.CliStockAware -- `
-  --input-dir "C:\Ruta\A\Excels" `
-  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
-  --coverage-start-date 2027-01-01 `
-  --coverage-end-date 2027-12-31 `
-  --delivery-date 2026-12-31 `
-  --today 2026-09-21 `
-  --tres-columnas
-```
-
-Si el archivo no coincide con el formato elegido, la aplicacion se detiene con un error que indica si hay que agregar o quitar `--tres-columnas`; nunca calcula con columnas mezcladas.
-
-## Ejecucion interactiva
-
-Si no pasas todos los argumentos, la app pregunta lo que falta:
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli
-```
-
-## Parametros CLI
-
-Obligatorios en la practica:
-
-- `--input-dir`
-- `--output`
-- `--delivery-date`
-- `--today`
-
-Cobertura, una de estas dos opciones:
-
-1. Recomendado
-   - `--coverage-start-date`
-   - `--coverage-end-date`
-
-2. Legacy
-   - `--coverage-start`
-   - `--coverage-end`
-
-## Ejemplo real
-
-Cobertura de abril 2026 a abril 2027:
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli -- `
-  --input-dir "C:\Users\chalo\Documents\Diseno\ExcelsPedidosSugeridos" `
-  --output "C:\Users\chalo\Documents\Diseno\ResultadosPedidosSugeridos\pedido-sugerido.xlsx" `
-  --coverage-start-date 2026-04-01 `
-  --coverage-end-date 2027-04-30 `
-  --delivery-date 2026-05-31 `
-  --today 2026-03-20
-```
-
-Cobertura de junio 2026 a junio 2027:
-
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli -- `
-  --input-dir "C:\Users\chalo\Documents\Diseno\ExcelsPedidosSugeridos" `
-  --output "C:\Users\chalo\Documents\Diseno\ResultadosPedidosSugeridos\pedido-sugerido.xlsx" `
-  --coverage-start-date 2026-06-01 `
-  --coverage-end-date 2027-06-30 `
-  --delivery-date 2026-05-31 `
-  --today 2026-03-20
-```
-
-## Archivo de salida
-
-La salida es un `.xlsx` con:
-
-- todas las filas
-- un filtrado con productos que tienen algun pedido > 0
-- una hoja sin la columna de maximos
-- una hoja sin la columna de maximos ni la recomendacion final
-
-Tambien aplica formato visual para destacar:
-- `Gonzalez Ruiz`
-- `Recomendacion Claude`
-
-## Tests
-
-```powershell
-dotnet test .\tests\PedidoSugerido.Tests\PedidoSugerido.Tests.csproj
+src/PedidoSugerido.Core            Readers, forecasting engine, report writer, CLI options
+src/PedidoSugerido.Cli             Program for the basic format
+src/PedidoSugerido.CliStockAware   Program for the stock-aware format
+tests/PedidoSugerido.Tests         xUnit tests
 ```
 
 ## Troubleshooting
 
-Si PowerShell marca error con argumentos tipo `--input-dir`, asegúrate de correr el comando completo, no solo una linea de argumentos suelta.
+If PowerShell complains about options like `--input-dir`, make sure you pasted the whole command. Each line has to end with a backtick (`` ` ``) so PowerShell treats them as one command.
 
-Ejemplo correcto:
+If the report can't be written, check that it isn't open in Excel.
 
-```powershell
-dotnet run --project .\src\PedidoSugerido.Cli -- `
-  --input-dir "C:\Ruta\A\Excels" `
-  --output "C:\Ruta\Salida\pedido-sugerido.xlsx" `
-  --coverage-start-date 2026-06-01 `
-  --coverage-end-date 2026-10-31 `
-  --delivery-date 2026-05-31 `
-  --today 2026-03-20
-```
+## License
 
-## Estado actual
-
-La aplicacion esta pensada para mantenerse totalmente local y deterministica. Si cambias el `README`, no necesitas cambiar la aplicacion para usarla en su estado actual.
+Copyright (c) 2026 Fernando González Ruiz. All rights reserved. See [LICENSE](LICENSE).
