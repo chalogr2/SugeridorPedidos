@@ -126,6 +126,27 @@ public sealed class ClosedXmlStockAwareInventoryReaderTests
         Assert.Single(dataset.Products);
     }
 
+    [Fact]
+    public void ReadFromDirectory_RejectsTwoFilesForTheSameYear()
+    {
+        var directory = CreateTempDirectory();
+        var full = new decimal?[12] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+        var blanks = new decimal?[12];
+        CreateStockAwareWorkbook(
+            Path.Combine(directory, "estadistico_2025.xlsx"),
+            "KUM_2025", "Total_CantVendida_2025", stockActual: 10, full, full);
+        CreateStockAwareWorkbook(
+            Path.Combine(directory, "estadistico_2025_v2.xlsx"),
+            "KUM_2025", "Total_CantVendida_2025", stockActual: 10, blanks, blanks);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new ClosedXmlStockAwareInventoryReader().ReadFromDirectory(directory));
+
+        Assert.Contains("'P001'", error.Message);
+        Assert.Contains("estadistico_2025.xlsx", error.Message);
+        Assert.Contains("estadistico_2025_v2.xlsx", error.Message);
+    }
+
     private static void CreateThreeColumnWorkbook(string path)
     {
         var months = new[] { "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic" };

@@ -11,6 +11,14 @@ public sealed class CliStockAwareStartup
 
     public int Run(string[] args)
     {
+        if (PedidoSugeridoCliOptions.IsHelpRequested(args))
+        {
+            Console.WriteLine(PedidoSugeridoCliOptions.UsageFor(
+                "PedidoSugerido.CliStockAware",
+                $"{ThreeColumnFlag}         Files have 3 columns per month (units, sales without IVA, start stock) instead of 2"));
+            return 0;
+        }
+
         try
         {
             var layout = args.Contains(ThreeColumnFlag, StringComparer.OrdinalIgnoreCase)
@@ -60,7 +68,7 @@ public sealed class CliStockAwareStartup
         foreach (var product in result.Suggestions.Take(5))
         {
             Console.WriteLine(
-                $"{product.Code} | {product.Name} | Stock {product.CurrentStock} | Gonzalez Ruiz {product.Methods.GonzalezRuiz} | Claude {product.Methods.WeightedRecommendation}");
+                $"{product.Code} | {product.Name} | Stock {product.CurrentStock} | Gonzalez Ruiz {product.Methods.GonzalezRuiz} | GR per-month {product.Methods.GonzalezRuizPerMonth} | Claude {product.Methods.WeightedRecommendation}");
         }
 
         var sample = result.Suggestions.FirstOrDefault();
@@ -71,6 +79,12 @@ public sealed class CliStockAwareStartup
 
         Console.WriteLine("Validacion Gonzalez Ruiz:");
         Console.WriteLine(
-            $"{sample.Code} -> puente {sample.GonzalezRuiz.BridgeDemand}, cobertura {sample.GonzalezRuiz.CoverageDemand}, periodo {sample.GonzalezRuiz.FullPeriodDemand}, stock {sample.GonzalezRuiz.Stock}, pedido {sample.GonzalezRuiz.FinalOrder}");
+            $"{sample.Code} -> puente {sample.GonzalezRuiz.BridgeDemand}, cobertura {sample.GonzalezRuiz.CoverageDemand}, periodo {sample.GonzalezRuiz.FullPeriodDemand}, stock {sample.GonzalezRuiz.Stock}, pedido {sample.GonzalezRuiz.FinalOrder}, años {sample.GonzalezRuiz.HistoricalWindowsUsed}");
+
+        var incomplete = result.Suggestions.Count(x => x.GonzalezRuiz.UsesIncompleteYears);
+        if (incomplete > 0)
+        {
+            Console.WriteLine($"Aviso: {incomplete} producto(s) sin ningun año completo; Gonzalez Ruiz usa años parciales (meses faltantes cuentan como 0).");
+        }
     }
 }

@@ -12,7 +12,8 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
         "Producto",
         "Modelo",
         "Saldo Actual",
-        "González Ruiz",
+        GonzalezRuizHeader,
+        GonzalezRuizPerMonthHeader,
         "Promedio",
         "Mínimos",
         "Máximos",
@@ -21,14 +22,19 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
         "Recomendación Claude"
     ];
 
-    private static readonly double[] FullColumnWidths = [14, 45, 14, 14, 16, 16, 14, 14, 18, 18, 20];
+    private const string GonzalezRuizHeader = "González Ruiz";
+    private const string GonzalezRuizPerMonthHeader = "González Ruiz per-month";
+
+    private static readonly double[] FullColumnWidths = [14, 45, 14, 14, 16, 24, 16, 14, 14, 18, 18, 20];
 
     public void Write(string outputPath, IReadOnlyCollection<ProductSuggestion> suggestions)
     {
+        EnsureSafeToReplace(outputPath);
+
         var ordered = suggestions.OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase).ToList();
 
         using var workbook = new XLWorkbook();
-        WriteWorksheet(workbook, "Todos los Productos", ordered, includeMaximum: true, includeClaude: true);
+        WriteWorksheet(workbook, ReportFirstSheetName, ordered, includeMaximum: true, includeClaude: true);
         WriteWorksheet(workbook, "Filtrado (Pedido > 0)", ordered.Where(HasAnyPositiveOrder).ToList(), includeMaximum: true, includeClaude: true);
         WriteWorksheet(workbook, "Filtrado Sin Máximos", ordered.Where(HasAnyPositiveOrderWithoutMax).ToList(), includeMaximum: false, includeClaude: true);
         WriteWorksheet(workbook, "Filtrado Sin Máx ni Claude", ordered.Where(HasAnyPositiveOrderWithoutMaxOrClaude).ToList(), includeMaximum: false, includeClaude: false);
@@ -40,6 +46,43 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
         }
 
         workbook.SaveAs(outputPath);
+    }
+
+    // Every report starts with this sheet; the readers use it to skip old reports.
+    public const string ReportFirstSheetName = "Todos los Productos";
+
+    public static bool IsReport(XLWorkbook workbook) =>
+        workbook.Worksheets.First().Name.Equals(ReportFirstSheetName, StringComparison.OrdinalIgnoreCase);
+
+    // The output often lives next to the sales files, and those are not in git: only a previous
+    // report may be replaced, never a sales file or anything else.
+    private static void EnsureSafeToReplace(string outputPath)
+    {
+        if (!File.Exists(outputPath))
+        {
+            return;
+        }
+
+        bool isReport;
+        try
+        {
+            using var existing = new XLWorkbook(outputPath);
+            isReport = IsReport(existing);
+        }
+        catch (IOException ex)
+        {
+            throw new IOException($"Cannot replace '{outputPath}': {ex.Message} If it is open in Excel, close it and try again.", ex);
+        }
+        catch (Exception)
+        {
+            isReport = false;
+        }
+
+        if (!isReport)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to overwrite '{outputPath}': it is not a previous pedido report (its first sheet is not '{ReportFirstSheetName}'). Choose a different --output path.");
+        }
     }
 
     private static void WriteWorksheet(XLWorkbook workbook, string sheetName, IReadOnlyList<ProductSuggestion> rows, bool includeMaximum, bool includeClaude)
@@ -67,17 +110,17 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
         worksheet.Row(1).Style.Font.FontColor = XLColor.White;
         worksheet.Row(1).Style.Fill.BackgroundColor = XLColor.FromHtml("#4472C4");
 
-        var gonzalezColumn = 5;
-        worksheet.Cell(1, gonzalezColumn).Style.Fill.BackgroundColor = XLColor.FromHtml("#548235");
+        // Columns 5 and 6: González Ruiz and González Ruiz per-month.
+        worksheet.Range(1, 5, 1, 6).Style.Fill.BackgroundColor = XLColor.FromHtml("#548235");
         if (rows.Count > 0)
         {
-            worksheet.Range(2, gonzalezColumn, rows.Count + 1, gonzalezColumn)
+            worksheet.Range(2, 5, rows.Count + 1, 6)
                 .Style.Fill.BackgroundColor = XLColor.FromHtml("#E2EFDA");
         }
 
         if (includeClaude)
         {
-            var claudeColumn = includeMaximum ? 11 : 10;
+            var claudeColumn = headers.Count;
             worksheet.Cell(1, claudeColumn).Style.Fill.BackgroundColor = XLColor.FromHtml("#2E75B6");
             if (rows.Count > 0)
             {
@@ -98,7 +141,8 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
             "Producto",
             "Modelo",
             "Saldo Actual",
-            "González Ruiz",
+            GonzalezRuizHeader,
+            GonzalezRuizPerMonthHeader,
             "Promedio",
             "Mínimos"
         };
@@ -121,18 +165,18 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
 
     private static List<double> BuildColumnWidths(bool includeMaximum, bool includeClaude)
     {
-        var indexes = new List<int> { 0, 1, 2, 3, 4, 5, 6 };
+        var indexes = new List<int> { 0, 1, 2, 3, 4, 5, 6, 7 };
         if (includeMaximum)
         {
-            indexes.Add(7);
+            indexes.Add(8);
         }
 
-        indexes.Add(8);
         indexes.Add(9);
+        indexes.Add(10);
 
         if (includeClaude)
         {
-            indexes.Add(10);
+            indexes.Add(11);
         }
 
         return indexes.Select(i => FullColumnWidths[i]).ToList();
@@ -146,6 +190,7 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
         worksheet.Cell(rowNumber, column++).Value = row.Model;
         worksheet.Cell(rowNumber, column++).Value = row.CurrentStock;
         worksheet.Cell(rowNumber, column++).Value = row.Methods.GonzalezRuiz;
+        worksheet.Cell(rowNumber, column++).Value = row.Methods.GonzalezRuizPerMonth;
         worksheet.Cell(rowNumber, column++).Value = row.Methods.Average;
         worksheet.Cell(rowNumber, column++).Value = row.Methods.Minimum;
         if (includeMaximum)
@@ -162,6 +207,7 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
 
     private static bool HasAnyPositiveOrder(ProductSuggestion item) =>
         item.Methods.GonzalezRuiz > 0 ||
+        item.Methods.GonzalezRuizPerMonth > 0 ||
         item.Methods.Average > 0 ||
         item.Methods.Minimum > 0 ||
         item.Methods.Maximum > 0 ||
@@ -171,6 +217,7 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
 
     private static bool HasAnyPositiveOrderWithoutMax(ProductSuggestion item) =>
         item.Methods.GonzalezRuiz > 0 ||
+        item.Methods.GonzalezRuizPerMonth > 0 ||
         item.Methods.Average > 0 ||
         item.Methods.Minimum > 0 ||
         item.Methods.ExponentialSmoothing > 0 ||
@@ -179,6 +226,7 @@ public sealed class ClosedXmlReportWriter : IExcelReportWriter
 
     private static bool HasAnyPositiveOrderWithoutMaxOrClaude(ProductSuggestion item) =>
         item.Methods.GonzalezRuiz > 0 ||
+        item.Methods.GonzalezRuizPerMonth > 0 ||
         item.Methods.Average > 0 ||
         item.Methods.Minimum > 0 ||
         item.Methods.ExponentialSmoothing > 0 ||

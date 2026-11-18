@@ -52,6 +52,7 @@ public sealed class ForecastCalculationEngine
         var exponential = CalculateExponentialSmoothing(allValues);
         var seasonalCoverageDemand = CalculateSeasonalCoverageDemand(orderedSales, coverageMonths);
         var gonzalez = CalculateGonzalezRuiz(product, bridgePeriod, coveragePeriod);
+        var gonzalezPerMonth = CalculateGonzalezRuizPerMonth(product, bridgePeriod, coveragePeriod);
         var totalDemand = allValues.Sum();
         var isSeasonal = Statistics.CoefficientOfVariation(allValues) > 0.8m;
 
@@ -65,6 +66,7 @@ public sealed class ForecastCalculationEngine
             exponential,
             seasonalCoverageDemand,
             gonzalez,
+            gonzalezPerMonth,
             totalDemand,
             isSeasonal);
     }
@@ -108,7 +110,8 @@ public sealed class ForecastCalculationEngine
                 maximumOrder,
                 exponentialOrder,
                 seasonalOrder,
-                weightedOrder),
+                weightedOrder,
+                context.GonzalezRuizPerMonth),
             context.GonzalezRuiz,
             context.IsSeasonal,
             abcClass,
@@ -123,7 +126,8 @@ public sealed class ForecastCalculationEngine
         var salesLookup = product.Sales.ToDictionary(x => (x.Year, x.MonthIndex), x => x.Value);
         var years = product.Sales.Select(x => x.Year).Distinct().OrderBy(x => x).ToList();
         var periodMonths = bridgeMonths.Concat(coverageMonths).ToList();
-        var windowResults = new List<(decimal Bridge, decimal Coverage, decimal Full, decimal Order)>();
+        var completeWindows = new List<(decimal Bridge, decimal Coverage, decimal Full, decimal Order)>();
+        var partialWindows = new List<(decimal Bridge, decimal Coverage, decimal Full, decimal Order)>();
 
         foreach (var anchorYear in years)
         {
@@ -136,8 +140,17 @@ public sealed class ForecastCalculationEngine
             var bridgeDemand = bridgeMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
             var coverageDemand = coverageMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
             var full = periodMonths.Sum(month => salesLookup.GetValueOrDefault((anchorYear, month.MonthIndex), 0m));
-            windowResults.Add((bridgeDemand, coverageDemand, full, Math.Max(0m, full - product.CurrentStock)));
+            var window = (bridgeDemand, coverageDemand, full, Math.Max(0m, full - product.CurrentStock));
+
+            // A missing month would count as zero demand, so a partial year (e.g. the current
+            // year to date) would drag the average down. Only complete years are used, unless
+            // the product has none (new products), where partial years are better than nothing.
+            var isComplete = periodMonths.All(month => salesLookup.ContainsKey((anchorYear, month.MonthIndex)));
+            (isComplete ? completeWindows : partialWindows).Add(window);
         }
+
+        var usesIncompleteYears = completeWindows.Count == 0 && partialWindows.Count > 0;
+        var windowResults = usesIncompleteYears ? partialWindows : completeWindows;
 
         if (windowResults.Count == 0)
         {
@@ -150,7 +163,35 @@ public sealed class ForecastCalculationEngine
             windowResults.Average(x => x.Full),
             product.CurrentStock,
             Math.Ceiling(windowResults.Average(x => x.Order)),
-            windowResults.Count);
+            windowResults.Count,
+            usesIncompleteYears);
+    }
+
+    // Same period as González Ruiz (bridge + coverage, a month counted as often as the period
+    // contains it), but each calendar month's demand is the average of that month over every
+    // year that has it. Partial years (e.g. the current year to date) contribute their real
+    // months, and a missing month is never counted as zero. A month with no data in any year
+    // falls back to the product's overall monthly average. Stock is subtracted once.
+    private static decimal CalculateGonzalezRuizPerMonth(
+        ProductHistory product,
+        IReadOnlyList<HistoricalMonth> bridgeMonths,
+        IReadOnlyList<HistoricalMonth> coverageMonths)
+    {
+        if (product.Sales.Count == 0)
+        {
+            return 0m;
+        }
+
+        var monthAverages = product.Sales
+            .GroupBy(x => x.MonthIndex)
+            .ToDictionary(g => g.Key, g => g.Average(x => x.Value));
+        var overallAverage = product.Sales.Average(x => x.Value);
+
+        var periodDemand = bridgeMonths
+            .Concat(coverageMonths)
+            .Sum(month => monthAverages.TryGetValue(month.MonthIndex, out var average) ? average : overallAverage);
+
+        return ClampToOrder(periodDemand - product.CurrentStock);
     }
 
     private static decimal CalculateExponentialSmoothing(IReadOnlyList<decimal> values)
@@ -267,6 +308,7 @@ public sealed class ForecastCalculationEngine
         decimal ExponentialSmoothingDemand,
         decimal SeasonalCoverageDemand,
         GonzalezRuizBreakdown GonzalezRuiz,
+        decimal GonzalezRuizPerMonth,
         decimal TotalHistoricalDemand,
         bool IsSeasonal);
 

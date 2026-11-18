@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using ClosedXML.Excel;
 using PedidoSugerido.Core.Contracts;
@@ -8,7 +9,12 @@ namespace PedidoSugerido.Core.Services;
 
 public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 {
+    private const int StockColumn = 4;
+    private const int FirstMonthColumn = 5;
+
     private static readonly Regex YearRegex = new(@"(19|20)\d{2}", RegexOptions.Compiled);
+
+    private static readonly string[] StockHeaderPrefixes = ["saldo", "stock", "existencia", "inventario"];
 
     public InventoryDataset ReadFromDirectory(string inputDirectory)
     {
@@ -57,16 +63,20 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
                     $"'{file}' uses the stock-aware format (monthly sales + StockInicial columns). Run PedidoSugerido.CliStockAware instead.");
             }
 
-            var hasSaldo = headers.Any(header =>
-                string.Equals(header.Trim(), "SaldoActual", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(header.Trim(), "Saldo Actual", StringComparison.OrdinalIgnoreCase) ||
-                header.Contains("saldo", StringComparison.OrdinalIgnoreCase));
-            var monthStartColumn = hasSaldo ? 5 : 4;
-
             if (lastColumn < 17)
             {
                 throw new InvalidOperationException(
                     $"Worksheet '{worksheet.Name}' in '{file}' must have at least 17 columns.");
+            }
+
+            // Months are read by position, so an unrecognized stock header must stop the run:
+            // guessing "no stock column" would zero every stock and shift every month by one.
+            var stockHeader = worksheet.Cell(1, StockColumn).GetString().Trim();
+            if (!IsStockHeader(stockHeader))
+            {
+                throw new InvalidOperationException(
+                    $"Column {StockColumn} of worksheet '{worksheet.Name}' in '{file}' is '{stockHeader}'; " +
+                    "expected the current stock column (a header starting with Saldo, Stock, Existencia or Inventario, e.g. 'SaldoActual').");
             }
 
             for (var row = 2; row <= lastRow; row++)
@@ -79,7 +89,7 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
 
                 var name = worksheet.Cell(row, 2).GetString().Trim();
                 var model = worksheet.Cell(row, 3).GetString().Trim();
-                var stock = hasSaldo ? (ParseNumericCell(worksheet.Cell(row, 4)) ?? 0m) : 0m;
+                var stock = ParseNumericCell(worksheet.Cell(row, StockColumn)) ?? 0m;
 
                 if (!aggregators.TryGetValue(code, out var aggregate))
                 {
@@ -87,15 +97,13 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
                     aggregators.Add(code, aggregate);
                 }
 
+                aggregate.RegisterRow(year, $"'{Path.GetFileName(file)}' row {row}");
                 aggregate.UpdateIdentity(name, model);
-                if (hasSaldo)
-                {
-                    aggregate.UpdateStock(year, stock, name, model);
-                }
+                aggregate.UpdateStock(year, stock, name, model);
 
                 for (var monthIndex = 0; monthIndex < 12; monthIndex++)
                 {
-                    var value = ParseNumericCell(worksheet.Cell(row, monthStartColumn + monthIndex));
+                    var value = ParseNumericCell(worksheet.Cell(row, FirstMonthColumn + monthIndex));
                     if (value is null)
                     {
                         continue;
@@ -121,8 +129,7 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
     }
 
     // Previous pedido outputs often sit next to the sales files; they always start with this sheet.
-    private static bool IsPedidoOutput(XLWorkbook workbook) =>
-        workbook.Worksheets.First().Name.Equals("Todos los Productos", StringComparison.OrdinalIgnoreCase);
+    private static bool IsPedidoOutput(XLWorkbook workbook) => ClosedXmlReportWriter.IsReport(workbook);
 
     private static IXLWorksheet? SelectDataWorksheet(XLWorkbook workbook) =>
         workbook.Worksheets.FirstOrDefault(sheet =>
@@ -148,6 +155,25 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
             $"Could not determine year from worksheet '{worksheet.Name}' or file '{filePath}'.");
     }
 
+    // Ignores case, whitespace and accents: "Saldo Actual", "SALDOACTUAL", "Sáldo", "Existencias" all match.
+    private static bool IsStockHeader(string header)
+    {
+        var normalized = new StringBuilder(header.Length);
+        foreach (var ch in header.Normalize(NormalizationForm.FormD))
+        {
+            if (char.IsWhiteSpace(ch) ||
+                CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            normalized.Append(char.ToLowerInvariant(ch));
+        }
+
+        var value = normalized.ToString();
+        return StockHeaderPrefixes.Any(prefix => value.StartsWith(prefix, StringComparison.Ordinal));
+    }
+
     private static int ParseYearFromPath(string filePath) =>
         ParseFirstYear(Path.GetFileNameWithoutExtension(filePath)) ?? int.MinValue;
 
@@ -164,36 +190,26 @@ public sealed class ClosedXmlInventoryReader : IExcelInventoryReader
         return match.Success && int.TryParse(match.Value, out var year) ? year : null;
     }
 
-    private static decimal? ParseNumericCell(IXLCell cell)
-    {
-        var text = cell.GetString().Trim();
-        if (string.IsNullOrWhiteSpace(text) ||
-            text.Equals("no data", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        if (cell.TryGetValue<decimal>(out var decimalValue))
-        {
-            return decimal.Truncate(decimalValue);
-        }
-
-        if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimalValue))
-        {
-            return decimal.Truncate(decimalValue);
-        }
-
-        if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out decimalValue))
-        {
-            return decimal.Truncate(decimalValue);
-        }
-
-        throw new InvalidOperationException($"Cell '{cell.Address}' contains a non-numeric value: '{text}'.");
-    }
+    private static decimal? ParseNumericCell(IXLCell cell) => NumericCellParser.Parse(cell);
 
     private sealed class ProductAggregate
     {
         private readonly Dictionary<(int Year, int MonthIndex), decimal> _sales = new();
+        private readonly Dictionary<int, string> _rowByYear = new();
+
+        // A second row for the same product and year (duplicate row, or two files for one year)
+        // would silently replace the first one's months, so it stops the run instead.
+        public void RegisterRow(int year, string location)
+        {
+            if (_rowByYear.TryGetValue(year, out var previous))
+            {
+                throw new InvalidOperationException(
+                    $"Product '{Code}' appears more than once for {year}: {previous} and {location}. " +
+                    "Each product must appear once per year; remove the duplicate row or the extra file for that year.");
+            }
+
+            _rowByYear[year] = location;
+        }
 
         public ProductAggregate(string code)
         {

@@ -7,4 +7,5 @@ public sealed record ForecastMethods(
     decimal Maximum,
     decimal ExponentialSmoothing,
     decimal SeasonalComparable,
-    decimal WeightedRecommendation);
+    decimal WeightedRecommendation,
+    decimal GonzalezRuizPerMonth);

@@ -6,4 +6,5 @@ public sealed record GonzalezRuizBreakdown(
     decimal FullPeriodDemand,
     decimal Stock,
     decimal FinalOrder,
-    int HistoricalWindowsUsed);
+    int HistoricalWindowsUsed,
+    bool UsesIncompleteYears = false);
